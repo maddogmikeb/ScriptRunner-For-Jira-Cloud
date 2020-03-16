@@ -1,4 +1,4 @@
-def script = "https://raw.githubusercontent.com/maddogmikeb/ScriptrunnerForJiraScripts/master/msteamsnotification.groovy"
+def script = "https://raw.githubusercontent.com/SMExDigital/ScriptRunner-For-Jira-Cloud/master/WorkPac/Script%20Listeners/version_sync.groovy"
 
 this.metaClass.mixin (new GroovyScriptEngine( '.' ).with {
     logger.info("Loading script from ${script}")
