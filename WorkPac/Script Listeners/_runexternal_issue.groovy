@@ -5,4 +5,5 @@ this.metaClass.mixin (new GroovyScriptEngine( '.' ).with {
     loadScriptByName(script)
 })
 
-run(new Expando(get : Unirest.&get, post : Unirest.&post, put : Unirest.&put, patch : Unirest.&patch, delete : Unirest.&delete ), logger, issue_event_type_name, issue)
+def uni = new Expando(get : Unirest.&get, post : Unirest.&post, put : Unirest.&put, patch : Unirest.&patch, delete : Unirest.&delete )
+run(uni, logger, issue_event_type_name, issue)
