@@ -6,116 +6,119 @@
 // Last Updated By: Mike Burns
 //*********************************
 
-def run(Unirest, logger, issue_event_type_name, issue) {
-    String.metaClass.encodeURL = {
-        java.net.URLEncoder.encode(delegate, "UTF-8")
-    }
+String.metaClass.encodeURL = {
+    java.net.URLEncoder.encode(delegate, "UTF-8")
+}
 
-    logger.info("Event -> ${issue_event_type_name}")
+logger.info("Event -> ${issue_event_type_name}")
 
-    def issueKey = issue.key
-    def defaultSupportTeam = "Level 1"
+def issueKey = issue.key
+def defaultSupportTeam = "Level 1"
 
-    def msteams = [
-        //"Level 3 - Apps": "https://outlook.office.com/webhook/b7778a23-a9ba-46aa-bc8f-6dbff68a7651@c250ce71-f5b5-49c7-b52d-051f8ebf0cfa/IncomingWebhook/46bce73da6704014a2e65827115d6743/4faf1181-d8d4-44f0-b0ea-0e036088bfd9",
-    ]
+def msteams = [
+    "Level 3 - Apps": "https://outlook.office.com/webhook/9e4ef040-6277-46ec-b9ca-8d7123b910b2@2f2894cf-8f13-49bc-85d6-4104d2c1e255/IncomingWebhook/73fdb409a5ed411bbb138257378f72e2/1cb04481-1946-4319-ab1c-c623d2938b4b",
+]
 
-    def customFields = Unirest.get("/rest/api/2/field")
-        .asObject(List)
-        .body
+def customFields = Unirest.get("/rest/api/2/field")
+    .asObject(List)
+    .body
 
-    def customField = customFields.find { (it as Map).name == 'Support Team' } as Map
+def customField = customFields.find { (it as Map).name == 'Support Team' } as Map
 
-    if (customField == null) {
-        logger.debug("Custom field not found")
+if (customField == null) {
+    logger.debug("Custom field not found")
+    return
+}
+
+if (issue_event_type_name != "issue_created") {
+    def teamChanged = changelog?.items.find { it['fieldId'] == customField.id }
+    logger.info("Change item -> ${teamChanged}")
+    if (teamChanged == null) {
+        logger.info("Support team was not updated")
         return
     }
-
-    if (issue_event_type_name != "issue_created") {
-        def teamChanged = changelog?.items.find { it['fieldId'] == customField.id }
-        logger.info("Change item -> ${teamChanged}")
-        if (teamChanged == null) {
-            logger.info("Support team was not updated")
-            return
-        }
-        if (teamChanged.fromString == null && teamChanged.toString == defaultSupportTeam) {
-            logger.info("Support team was defaulting to ${defaultSupportTeam} no update required")
-            return
-        }
-    }
-
-    def supportTeamValue = (issue.fields[customField.id] as Map)?.value
-
-    if (supportTeamValue == null) {
-        logger.info("Support team has no value")
+    if (teamChanged.fromString == null && teamChanged.toString == defaultSupportTeam) {
+        logger.info("Support team was defaulting to ${defaultSupportTeam} no update required")
         return
     }
+}
 
-    if (issue_event_type_name == "issue_created" && supportTeamValue == defaultSupportTeam) {
-        logger.info("Default support team selected")
-        return
+def supportTeamValue = (issue.fields[customField.id] as Map)?.value
+
+if (supportTeamValue == null) {
+    logger.info("Support team has no value")
+    return
+}
+
+if (issue_event_type_name == "issue_created" && supportTeamValue == defaultSupportTeam) {
+    logger.info("Default support team selected")
+    return
+}
+
+def webhookUrl = msteams[supportTeamValue]
+
+if (webhookUrl != null) {
+    def valueSteamField = customFields.find { (it as Map).name == 'Value Stream' } as Map
+    def valueStream = (issue.fields[valueSteamField.id] as Map)?.value
+    if (valueStream == null) {
+        valueStream = "Not set"
     }
-
-    def webhookUrl = msteams[supportTeamValue]
-
-    if (webhookUrl != null) {
-        def hookresult = Unirest.post(webhookUrl)
-            .header("Content-Type", "application/json")
-            .body([
-                "@context": "https://schema.org/extensions",
-                "@type": "MessageCard",
-                "themeColor": "066862",
-                "title": "${item.key} has been escalted to " + supportTeamValue,
-                "text": "${item.key} - ${item.fields.summary}\nReported by ${item.fields.reporter?.displayName}",
-                "potentialAction": [
-                    [
-                        "@type": "OpenUri",
-                        "name": "Open item in Jira",
-                        "targets": [
-                            [ "os": "default", "uri": "https://workpactech.atlassian.net/browse/${item.key}" ]
-                        ]
+    def hookresult = Unirest.post(webhookUrl)
+        .header("Content-Type", "application/json")
+        .body([
+            "@context": "https://schema.org/extensions",
+            "@type": "MessageCard",
+            "themeColor": "066862",
+            "title": "${issue.key} has been escalated to " + supportTeamValue,
+            "text": "<pre>${issue.key} - ${issue.fields.summary}\n<b>${issue.fields.priority?.name}</b>\nReported by ${issue.fields.reporter?.displayName}\nValue Stream: ${valueStream}</pre>",
+            "potentialAction": [
+                [
+                    "@type": "OpenUri",
+                    "name": "Open item in Jira",
+                    "targets": [
+                        [ "os": "default", "uri": "https://workpactech.atlassian.net/browse/${issue.key}" ]
                     ]
                 ]
+            ]
+        ])
+        .asString()
+    if (hookresult.status >= 200 && hookresult.status < 300) {
+        logger.info("Notification sent to ms teams")
+    }
+}
+else
+{
+    def comment = "'*** Automated message ***  \r\n This issue has been escalated to ${supportTeamValue}."
+
+    try {
+        def notificationGroup = "supportlevel-${supportTeamValue}"
+        def groupDetails = Unirest.get("/rest/api/2/group?expand=users&groupname=${notificationGroup.encodeURL()}")
+            .asObject(Map)
+            .body
+        if (groupDetails?.users.items.size() > 0) {
+            comment += " FYI"
+            groupDetails?.users.items.each { Map user ->
+                comment += " [${user.displayName}|~accountid:${user.accountId}] "
+            }
+        }
+    } catch (Exception ex) {
+        logger.warn("Unable to get support-level group details. ${ex}")
+    }
+
+    try {
+        def result = Unirest.post("/rest/servicedeskapi/request/${issueKey}/comment?notifyUsers=false")
+            .header("Content-Type", "application/json")
+            .body([
+                public: false,
+                body: comment
             ])
             .asString()
-        if (hookresult.status >= 200 && hookresult.status < 300) {
-            logger.info("Notification sent to ms teams")
+        if (result.status >= 200 && result.status < 300) {
+            logger.info("Created comment -> ${comment}")
         }
+    } catch (Exception ex) {
+        logger.warn("Cannot create - most likely the item is still being updated. ${ex}")
     }
-    else
-    {
-        def comment = "'*** Automated message ***  \r\n This issue has been escalated to ${supportTeamValue}."
-
-        try {
-            def notificationGroup = "supportlevel-${supportTeamValue}"
-            def groupDetails = Unirest.get("/rest/api/2/group?expand=users&groupname=${notificationGroup.encodeURL()}")
-                .asObject(Map)
-                .body
-            if (groupDetails?.users.items.size() > 0) {
-                comment += " FYI"
-                groupDetails?.users.items.each { Map user ->
-                    comment += " [${user.displayName}|~accountid:${user.accountId}] "
-                }
-            }
-        } catch (Exception ex) {
-            logger.warn("Unable to get support-level group details. ${ex}")
-        }
-
-        try {
-            def result = Unirest.post("/rest/servicedeskapi/request/${issueKey}/comment?notifyUsers=false")
-                .header("Content-Type", "application/json")
-                .body([
-                    public: false,
-                    body: comment
-                ])
-                .asString()
-            if (result.status >= 200 && result.status < 300) {
-                logger.info("Created comment -> ${comment}")
-            }
-        } catch (Exception ex) {
-            logger.warn("Cannot create - most likely the item is still being updated. ${ex}")
-        }
-    }
-
-    logger.info("Event -> ${issue_event_type_name} - Completed")
 }
+
+logger.info("Event -> ${issue_event_type_name} - Completed")
